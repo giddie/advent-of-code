@@ -103,4 +103,97 @@ select sum(cast(number as integer))
  where is_adjacent_to_symbol
 ;
 
+-- Part 2
+with
+number_tokens as
+(
+             select line_number,
+                    text,
+                    cast (
+                      (
+                        sum(prefix_length + number_length)
+                          over (
+                            partition by line_number
+                                order by match_index
+                          )
+                        - number_length
+                        + 1
+                      )
+                      as integer
+                    ) as number_start_index,
+                    matches[2] as number,
+                    number_length
+               from input_lines
+  left join lateral (
+                      select *
+                        from regexp_matches(text, '(.*?)(\d+)(?!\d)', 'g')
+                             with ordinality
+                             as t(matches, match_index)
+                    )
+                 on true
+  left join lateral (
+                      select character_length(matches[1]) as prefix_length,
+                             character_length(matches[2]) as number_length
+                    )
+                 on true
+),
+gear_tokens as
+(
+             select line_number,
+                    text,
+                    cast (
+                      (
+                        sum(prefix_length + 1)
+                          over (
+                            partition by line_number
+                                order by match_index
+                          )
+                      )
+                      as integer
+                    ) as gear_index,
+                    matches[2] as number
+               from input_lines
+  left join lateral (
+                      select *
+                        from regexp_matches(text, '(.*?)(\*)', 'g')
+                             with ordinality
+                             as t(matches, match_index)
+                    )
+                 on true
+  left join lateral character_length(matches[1]) as prefix_length
+                 on true
+),
+gear_points as
+(
+  select line_number,
+         text,
+         point(gear_index, line_number) as gear_point
+    from gear_tokens
+   where gear_index is not null
+),
+number_bounding_boxes as
+(
+  select line_number,
+         text,
+         number,
+         box(
+           point((number_start_index - 1),             (line_number - 1)),
+           point((number_start_index + number_length), (line_number + 1))
+         ) as bounding_box
+    from number_tokens
+   where number is not null
+),
+geared_numbers as
+(
+    select array_agg(cast (number as integer)) as numbers
+      from number_bounding_boxes
+      join gear_points
+        on bounding_box @> gear_point
+  group by cast (gear_point as text)
+    having count(number) = 2
+)
+select sum(numbers[1] * numbers[2])
+  from geared_numbers
+;
+
 drop table input_lines cascade;
