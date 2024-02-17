@@ -28,20 +28,22 @@ create view matches_count as (
 )
 ;
 
--- Part 1
-select sum(pow(2, (matches_count - 1))) as result
-  from matches_count
-;
-
--- Part 2
-with recursive
-extra_card_draws as (
+create view extra_card_draws as (
              select line_number as card_number,
                     extra_card_draw
                from matches_count
   left join lateral generate_series((line_number + 1), (line_number + matches_count)) as extra_card_draw
                  on true
-),
+)
+;
+
+-- Part 1
+select sum(pow(2, (matches_count - 1))) as result
+  from matches_count
+;
+
+-- Part 2 - Simple recursion (slow)
+with recursive
 total_card_draws as (
   (
     select cast (line_number as bigint) as card_number
@@ -56,6 +58,52 @@ total_card_draws as (
   )
 )
 select count(*) as result
+  from total_card_draws
+;
+
+-- Part 2 - Scan through cards accumulating multipliers (fast)
+with recursive
+total_card_draws as (
+  (
+    select 0 as card_number,
+           jsonb_object('{}') as multipliers,
+           0 as card_count
+  )
+  union all
+  (
+               select card_number + 1,
+                      (
+                           (multipliers - (card_number + 1)::text)
+                        || coalesce(new_multipliers, '{}')
+                      ) as multipliers,
+                      new_card_count
+                 from total_card_draws
+    left join lateral coalesce(
+                        (multipliers->>(card_number + 1)::text)::integer,
+                        1
+                      ) as new_card_count
+                   on true
+    left join lateral (
+                        select (
+                                 jsonb_object_agg(
+                                   extra_card_draw,
+                                   coalesce(
+                                     (multipliers->>extra_card_draw::text)::integer,
+                                     1
+                                   ) + new_card_count
+                                 )
+                               ) as new_multipliers
+                          from extra_card_draws
+                         where card_number = (total_card_draws.card_number + 1)
+                      )
+                   on true
+                where card_number < (
+                                      select count(*) as num_lines
+                                        from input_lines
+                                    )
+  )
+)
+select sum(card_count) as result
   from total_card_draws
 ;
 
