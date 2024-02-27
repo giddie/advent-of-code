@@ -8,80 +8,83 @@ create table if not exists input_lines (
 -- \copy input_lines (text) from 'example';
 \copy input_lines (text) from 'input';
 
--- Part 1
-with recursive
-config_block_iterations as (
+create view maps as (
+  with recursive
+  config_block_iterations as (
+    (
+      select 3 as index,
+             cast (null as integer) as line_number,
+             cast (null as text),
+             cast ('{"maps": []}' as jsonb) as blocks
+    )
+    union all
+    (
+                 select index + 1,
+                        input_lines.line_number,
+                        input_lines.text,
+                        (
+                          case
+                          when line_type = 'map_start' then
+                            jsonb_set(blocks, '{current_map}', '[]')
+                          when line_type = 'map_line' then
+                            jsonb_insert(blocks, '{current_map, -1}', to_jsonb(map_entry), true)
+                          when line_type in ('block_end', 'input_end') and blocks ? 'current_map' then
+                            jsonb_insert(blocks, '{maps, -1}', blocks->'current_map', true) - 'current_map'
+                          else blocks
+                          end
+                        ) as blocks
+                   from config_block_iterations
+              left join input_lines
+                     on input_lines.line_number = index
+      left join lateral (
+                          select (
+                                   case
+                                   when right(input_lines.text, 4) = 'map:' then 'map_start'
+                                   when character_length(input_lines.text) = 0 then 'block_end'
+                                   when input_lines.text is null then 'input_end'
+                                   else 'map_line'
+                                   end
+                                 ) as line_type
+                        )
+                     on true
+      left join lateral (
+                          select (
+                                   case when line_type = 'map_line' then
+                                     cast (string_to_array(input_lines.text, ' ') as bigint[])
+                                   end
+                                 ) as map_entry
+                        )
+                     on true
+                  where index <= (
+                                   select count(*) + 1
+                                     from input_lines
+                                 )
+    )
+  ),
+  config_blocks as
   (
-    select 3 as index,
-           cast (null as integer) as line_number,
-           cast (null as text),
-           cast ('{"maps": []}' as jsonb) as blocks
+      select blocks as json
+        from config_block_iterations
+    order by index desc
+       fetch first row only
   )
-  union all
-  (
-               select index + 1,
-                      input_lines.line_number,
-                      input_lines.text,
-                      (
-                        case
-                        when line_type = 'map_start' then
-                          jsonb_set(blocks, '{current_map}', '[]')
-                        when line_type = 'map_line' then
-                          jsonb_insert(blocks, '{current_map, -1}', to_jsonb(map_entry), true)
-                        when line_type in ('block_end', 'input_end') and blocks ? 'current_map' then
-                          jsonb_insert(blocks, '{maps, -1}', blocks->'current_map', true) - 'current_map'
-                        else blocks
-                        end
-                      ) as blocks
-                 from config_block_iterations
-            left join input_lines
-                   on input_lines.line_number = index
-    left join lateral (
-                        select (
-                                 case
-                                 when right(input_lines.text, 4) = 'map:' then 'map_start'
-                                 when character_length(input_lines.text) = 0 then 'block_end'
-                                 when input_lines.text is null then 'input_end'
-                                 else 'map_line'
-                                 end
-                               ) as line_type
-                      )
-                   on true
-    left join lateral (
-                        select (
-                                 case when line_type = 'map_line' then
-                                   cast (string_to_array(input_lines.text, ' ') as bigint[])
-                                 end
-                               ) as map_entry
-                      )
-                   on true
-                where index <= (
-                                 select count(*) + 1
-                                   from input_lines
-                               )
-  )
-),
-config_blocks as
-(
-    select blocks as json
-      from config_block_iterations
-  order by index desc
-     fetch first row only
-),
-seeds as (
-             select unnest(string_to_array(seeds_match[1], ' ')) as seed
-               from input_lines
-  left join lateral regexp_match(input_lines.text, '^seeds: (.*)') as seeds_match
-                 on true
-              where input_lines.line_number = 1
-),
-maps as (
              select index,
                     map
                from config_blocks
   left join lateral jsonb_array_elements(json->'maps')
                     with ordinality as t(map, index)
                  on true
+)
+;
+
+-- Part 1
+with recursive
+seeds as (
+             select unnest(string_to_array(seeds_match[1], ' ')) as seed
+               from input_lines
+  left join lateral regexp_match(input_lines.text, '^seeds: (.*)') as seeds_match
+                 on true
+              where input_lines.line_number = 1
 ),
 seed_map_iterations as
 (
@@ -134,6 +137,103 @@ seed_map_iterations as
                  )
 order by value
    fetch first row only
+;
+
+
+-- Part 2
+with recursive
+seeds_with_count as(
+  select numbers[1] as seed,
+         numbers[2] as count
+    from (
+                      select array_agg(cast (number as bigint)) as numbers
+                        from input_lines
+           left join lateral regexp_match(input_lines.text, '^seeds: (.*)') as seeds_match
+                          on true
+           left join lateral unnest(string_to_array(seeds_match[1], ' '))
+                             with ordinality as t(number, index)
+                          on true
+                       where input_lines.line_number = 1
+                    group by (index + 1) / 2
+         )
+),
+seed_ranges as
+(
+  select int8range(seed, (seed + count)) as seed_range
+    from seeds_with_count
+),
+map_entries as
+(
+  select index as map_index,
+         cast (map_entry->>0 as bigint) as destination_range_start,
+         cast (map_entry->>1 as bigint) as source_range_start,
+         cast (map_entry->>2 as bigint) as range_length
+    from maps,
+         jsonb_array_elements(map) as map_entry
+),
+map_source_ranges as
+(
+    select map_index,
+           range_agg(
+             int8range(
+               source_range_start,
+               (source_range_start + range_length)
+             )
+           ) as mapped_source_range
+      from map_entries
+  group by map_index
+),
+seed_map_iterations as
+(
+  (
+    select seed_range as value_range,
+           1 as iteration
+      from seed_ranges
+  )
+  union all
+  (
+               select new_value_range,
+                      iteration + 1
+                 from seed_map_iterations
+            left join map_source_ranges
+                   on map_source_ranges.map_index = iteration
+    left join lateral (
+                        (
+                                     select int8range(
+                                              greatest(lower(mapped_range), lower(map_source_range)) - source_range_start + destination_range_start,
+                                              least(upper(mapped_range), upper(map_source_range)) - source_range_start + destination_range_start
+                                            ) as new_value_range
+                                       from unnest(multirange(value_range) * mapped_source_range) as mapped_range
+                                  left join map_entries
+                                         on map_entries.map_index = iteration
+                          left join lateral (
+                                              select int8range(
+                                                       source_range_start,
+                                                       (source_range_start + range_length)
+                                                     ) as map_source_range
+                                            )
+                                         on true
+                                      where map_source_range && mapped_range
+                        )
+                        union all
+                        (
+                          select unmapped_value_range as new_value_range
+                            from unnest(multirange(value_range) - mapped_source_range) as unmapped_value_range
+                        )
+                      )
+                   on true
+                where iteration <= (
+                                     select count(*)
+                                       from maps
+                                   )
+  )
+)
+select min(lower(value_range)) as result
+  from seed_map_iterations
+ where iteration = (
+                     select max(iteration)
+                       from seed_map_iterations
+                   )
 ;
 
 drop table input_lines cascade;
