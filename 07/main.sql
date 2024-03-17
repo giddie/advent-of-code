@@ -14,8 +14,7 @@ parsed_input as
 (
   select line_number as hand_number,
          hand,
-         cast (chunks[2] as integer) as bid,
-         max(line_number) over () as num_hands
+         cast (chunks[2] as integer) as bid
     from input_lines,
          string_to_array(text, ' ') as chunks,
          string_to_array(chunks[1], null) as hand
@@ -67,6 +66,95 @@ type_rankings as
   select label_count_columns.hand_number,
          rank() over (
            order by highest_label_count,
+                    second_highest_label_count
+         ) as type_order
+    from label_count_columns
+),
+ranked_hands as
+(
+     select type_rankings.hand_number,
+            row_number() over (
+              order by type_order,
+                       hand_strengths
+            ) as rank
+       from type_rankings
+  left join hand_strengths
+         on type_rankings.hand_number = hand_strengths.hand_number
+   order by rank
+)
+   select sum(rank * bid) as result
+     from ranked_hands
+left join parsed_input
+       on ranked_hands.hand_number = parsed_input.hand_number
+;
+
+-- Part 2
+with
+parsed_input as
+(
+  select line_number as hand_number,
+         hand,
+         cast (chunks[2] as integer) as bid
+    from input_lines,
+         string_to_array(text, ' ') as chunks,
+         string_to_array(chunks[1], null) as hand
+),
+hand_strengths as
+(
+    select hand_number,
+           array_agg(
+             case label
+               when 'A' then 13
+               when 'K' then 12
+               when 'Q' then 11
+               when 'T' then 10
+               when 'J' then 1
+               else cast (label as integer)
+             end
+           ) as hand_strengths
+      from parsed_input,
+           unnest(hand) as label
+  group by hand_number
+),
+label_counts as
+(
+    select hand_number,
+           label,
+           count(*) as count
+      from parsed_input,
+           unnest(hand) as label
+  group by hand_number,
+           label
+  order by hand_number,
+           count desc
+),
+label_count_columns as
+(
+             select hand_number,
+                    coalesce(label_counts[1], 0) as highest_label_count,
+                    coalesce(label_counts[2], 0) as second_highest_label_count,
+                    coalesce(joker_count, 0) as joker_count
+               from parsed_input
+  left join lateral (
+                      select array_agg(count) as label_counts
+                        from label_counts
+                       where hand_number = parsed_input.hand_number
+                         and label <> 'J'
+                    )
+                 on true
+  left join lateral (
+                      select count as joker_count
+                        from label_counts
+                       where hand_number = parsed_input.hand_number
+                         and label = 'J'
+                    )
+                 on true
+),
+type_rankings as
+(
+  select label_count_columns.hand_number,
+         rank() over (
+           order by highest_label_count + joker_count,
                     second_highest_label_count
          ) as type_order
     from label_count_columns
