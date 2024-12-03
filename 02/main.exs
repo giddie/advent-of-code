@@ -27,12 +27,13 @@ defmodule Main do
 
     [second | tail]
     |> Enum.reduce_while({:safe, first}, fn value, {:safe, prev} ->
-        diff = abs(value - prev)
-        if direction_ok?.(value, prev) && diff in 1..3 do
-          {:cont, {:safe, value}}
-        else
-          {:halt, :unsafe}
-        end
+      diff = abs(value - prev)
+
+      if direction_ok?.(value, prev) && diff in 1..3 do
+        {:cont, {:safe, value}}
+      else
+        {:halt, :unsafe}
+      end
     end)
     |> then(fn
       {:safe, _value} ->
