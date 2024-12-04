@@ -67,6 +67,48 @@ defmodule Main do
     end
   end
 
+  @spec xmas_squares_to_right(grid()) :: [grid()]
+  defp xmas_squares_to_right(
+         [
+           <<a::binary-size(1), b::binary-size(1), <<c::binary-size(1)>>, _rest_1::binary>>,
+           <<d::binary-size(1), e::binary-size(1), <<f::binary-size(1)>>, _rest_2::binary>>,
+           <<g::binary-size(1), h::binary-size(1), <<i::binary-size(1)>>, _rest_3::binary>>
+           | _lines_below
+         ] = lines
+       ) do
+    words = [
+      a <> e <> i,
+      c <> e <> g
+    ]
+
+    squares =
+      if Enum.all?(words, &(&1 in ["MAS", "SAM"])) do
+        square = [
+          a <> b <> c,
+          d <> e <> f,
+          g <> h <> i
+        ]
+
+        [square]
+      else
+        []
+      end
+
+    squares ++
+      (Enum.map(lines, &String.slice(&1, 1..-1//1))
+       |> xmas_squares_to_right())
+  end
+
+  defp xmas_squares_to_right(_lines), do: []
+
+  @spec xmas_squares(grid()) :: [grid()]
+  defp xmas_squares([_one, _two_, _three | _rest] = lines) do
+    xmas_squares_to_right(lines) ++
+      xmas_squares(Enum.drop(lines, 1))
+  end
+
+  defp xmas_squares(lines) when is_list(lines), do: []
+
   @spec part_1() :: any()
   def part_1() do
     original =
@@ -88,8 +130,13 @@ defmodule Main do
     |> Enum.sum()
   end
 
-  @spec part_2() :: any()
-  def part_2() do
+  @doc """
+  This approach uses the diagonals from part1 to find the search strings, and looks for matching
+  strings in the orthogonal diagonals. But matching up the coordinates proved much trickier than I
+  had anticipated. It works, but I'm not happy with the complexity.
+  """
+  @spec part_2a() :: any()
+  def part_2a() do
     original =
       line_stream()
       |> Enum.to_list()
@@ -144,7 +191,20 @@ defmodule Main do
     )
     |> Enum.count()
   end
+
+  @doc """
+  This approach uses pattern matching to detect the whole square, and I'm much happier with the
+  result.
+  """
+  @spec part_2b() :: any()
+  def part_2b() do
+    line_stream()
+    |> Enum.to_list()
+    |> xmas_squares()
+    |> Enum.count()
+  end
 end
 
 IO.puts("Part 1: #{Main.part_1()}")
-IO.puts("Part 2: #{Main.part_2()}")
+IO.puts("Part 2a: #{Main.part_2a()}")
+IO.puts("Part 2b: #{Main.part_2b()}")
