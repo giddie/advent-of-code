@@ -3,6 +3,8 @@ defmodule Main do
 
   @type point :: %{x: non_neg_integer(), y: non_neg_integer()}
   @type direction :: :up | :down | :left | :right
+  @type intention :: :leaving_map | {:turn, direction()} | :loop
+  @type state :: {point(), intention()}
 
   @spec line_stream() :: Stream.t()
   defp line_stream() do
@@ -10,11 +12,39 @@ defmodule Main do
     |> Stream.map(&String.trim_trailing(&1, "\n"))
   end
 
-  @spec walk(point(), direction(), map(), [point()]) :: [point()]
-  defp walk(guard, direction, %{} = map, history \\ []) do
-    next_history = [guard | history]
+  @spec parse_map(Stream.t(String.t())) :: map()
+  defp parse_map(line_stream) do
+    lines = Enum.to_list(line_stream)
 
-    {filter_axis, {sort_axis, sort_order}, new_direction} =
+    for {line, y} <- Enum.with_index(lines),
+        {char, x} <- Enum.with_index(String.graphemes(line)),
+        reduce: %{} do
+      acc ->
+        point = %{x: x, y: y}
+
+        type =
+          case char do
+            "#" -> {:some, :obstacles}
+            "^" -> {:some, :guards}
+            _ -> :none
+          end
+
+        case type do
+          {:some, key} -> Map.update(acc, key, [point], &[point | &1])
+          :none -> acc
+        end
+    end
+    |> Map.put(:bounds, %{
+      y: Enum.count(lines),
+      x: String.length(Enum.at(lines, 0))
+    })
+  end
+
+  # Returns a point representing the new position of the guard after they've walked in the given
+  # direction, and the new direction they are now facing.
+  @spec next_guard_position(point(), direction(), map()) :: state()
+  defp next_guard_position(guard, direction, %{} = map) do
+    {filter_axis, {sort_axis, sort_order}, next_direction} =
       case direction do
         :up -> {:x, {:y, :desc}, :right}
         :right -> {:y, {:x, :asc}, :down}
@@ -35,76 +65,107 @@ defmodule Main do
 
       on_same_axis? && in_front_of_guard?
     end)
-    |> Enum.sort_by(&Map.fetch!(&1, sort_axis), sort_order)
-    |> case do
-      [obstacle | _] ->
-        offset = if sort_order == :asc, do: -1, else: 1
-
-        %{
-          filter_axis => Map.fetch!(obstacle, filter_axis),
-          sort_axis => Map.fetch!(obstacle, sort_axis) + offset
-        }
-        |> walk(new_direction, map, next_history)
-
+    |> then(fn
       [] ->
-        final_position = %{guard | sort_axis => Map.fetch!(map.bounds, sort_axis)}
-        Enum.reverse([final_position | next_history])
-    end
+        case sort_order do
+          :asc -> map.bounds
+          :desc -> %{y: -1, x: -1}
+        end
+        |> then(&{&1, :leaving_map})
+
+      obstacles ->
+        sorter = if sort_order == :asc, do: &<=/2, else: &>=/2
+
+        obstacles
+        |> Enum.min_by(&Map.fetch!(&1, sort_axis), sorter)
+        |> then(&{&1, {:turn, next_direction}})
+    end)
+    |> then(fn {obstacle, intention} ->
+      offset = if sort_order == :asc, do: -1, else: 1
+
+      next_guard_position = %{
+        filter_axis => Map.fetch!(guard, filter_axis),
+        sort_axis => Map.fetch!(obstacle, sort_axis) + offset
+      }
+
+      {next_guard_position, intention}
+    end)
+  end
+
+  @spec guard_path(map()) :: [state()]
+  defp guard_path(%{guards: [%{} = guard]} = map) do
+    Stream.unfold(
+      [{guard, {:turn, :up}}],
+      fn
+        :done ->
+          nil
+
+        {:final, state} ->
+          {state, :done}
+
+        [{guard, {:turn, direction}} = state | _] = history ->
+          case next_guard_position(guard, direction, map) do
+            {_point, :leaving_map} = final_state ->
+              {state, {:final, final_state}}
+
+            {guard, _intention} = next_state ->
+              if next_state in history do
+                {state, {:final, {guard, :loop}}}
+              else
+                {state, [next_state | history]}
+              end
+          end
+      end
+    )
+    |> Enum.to_list()
+  end
+
+  @spec interpolate_points([state()]) :: [point()]
+  defp interpolate_points([{first_point, _intention} | _] = points) do
+    points
+    |> Enum.map(fn {point, _direction} -> point end)
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.flat_map(fn [start_point, end_point] ->
+      for y <- start_point.y..end_point.y,
+          x <- start_point.x..end_point.x do
+        %{y: y, x: x}
+      end
+      |> Enum.drop(1)
+    end)
+    |> then(&[first_point | &1])
   end
 
   @spec part_1() :: any()
   def part_1() do
-    lines = Enum.to_list(line_stream())
-
-    map =
-      for {line, y} <- Enum.with_index(lines),
-          {char, x} <- Enum.with_index(String.graphemes(line)),
-          reduce: %{} do
-        acc ->
-          point = %{x: x, y: y}
-
-          type =
-            case char do
-              "#" -> {:some, :obstacles}
-              "^" -> {:some, :guards}
-              _ -> :none
-            end
-
-          case type do
-            {:some, key} -> Map.update(acc, key, [point], &[point | &1])
-            :none -> acc
-          end
-      end
-      |> Map.put(:bounds, %{
-        y: Enum.count(lines) - 1,
-        x: String.length(Enum.at(lines, 0)) - 1
-      })
-
-    [%{} = guard] = map.guards
-
-    [first_point | points] = walk(guard, :up, map)
-
-    Enum.reduce(
-      points,
-      {first_point, []},
-      fn point, {prev_point, covered_points} ->
-        for x <- prev_point.x..point.x,
-            y <- prev_point.y..point.y do
-          %{x: x, y: y}
-        end
-        |> then(&[&1 | covered_points])
-        |> then(&{point, &1})
-      end
-    )
-    |> then(fn {_prev_point, covered_points} -> covered_points end)
-    |> List.flatten()
+    line_stream()
+    |> parse_map()
+    |> guard_path()
+    |> interpolate_points()
     |> Enum.uniq()
     |> Enum.count()
   end
 
   @spec part_2() :: any()
   def part_2() do
-    ""
+    map = line_stream() |> parse_map()
+
+    map
+    |> guard_path()
+    |> interpolate_points()
+    |> Enum.drop(1)
+    |> Task.async_stream(fn new_obstacle_point ->
+      map.obstacles
+      |> update_in(&[new_obstacle_point | &1])
+      |> guard_path()
+      |> Enum.at(-1)
+      |> then(fn
+         {_point, :leaving_map} -> []
+         {_point, :loop} -> [new_obstacle_point]
+      end)
+    end)
+    |> Stream.flat_map(fn {:ok, value} -> value end)
+    |> Enum.uniq()
+    |> Enum.count()
   end
 end
 
