@@ -68,8 +68,8 @@ defmodule Main do
       |> add_edge.(:end, {grid.end, :bottom}, 0)
       |> add_edge.(:end, {grid.end, :left}, 0)
 
-    for y <- 0..bounds_y,
-        x <- 0..bounds_x,
+    for y <- 0..(bounds_y - 1),
+        x <- 0..(bounds_x - 1),
         reduce: graph do
       acc ->
         point = {x, y}
@@ -128,80 +128,60 @@ defmodule Main do
           {[{paths, cost}], :finished}
 
         %{queue: [{node, _node_cost} | queue_tail]} = acc ->
-          acc =
-            %{acc | queue: queue_tail}
-            |> Map.update!(:visited, &MapSet.put(&1, node))
+          acc = %{acc | queue: queue_tail}
 
-          {node_paths, node_cost} = Map.fetch!(acc.paths, node)
-          node_paths = Enum.map(node_paths, &[node | &1])
+          if node in acc.visited do
+            acc
+          else
+            acc = Map.update!(acc, :visited, &MapSet.put(&1, node))
 
-          for {neighbour_node, edge_cost} <- Map.get(graph, node, %{}),
-              neighbour_node not in acc.visited,
-              reduce: acc do
-            acc ->
-              cost_through_node = node_cost + edge_cost
+            {node_paths, node_cost} = Map.fetch!(acc.paths, node)
+            node_paths = Enum.map(node_paths, &[node | &1])
 
-              action =
-                case Map.fetch(acc.paths, neighbour_node) do
-                  :error ->
-                    :replace
+            for {neighbour_node, edge_cost} <- Map.get(graph, node, %{}),
+                neighbour_node not in acc.visited,
+                reduce: acc do
+              acc ->
+                cost_through_node = node_cost + edge_cost
 
-                  {:ok, {_path, neighbour_cost}} ->
-                    cond do
-                      cost_through_node < neighbour_cost -> :replace
-                      cost_through_node == neighbour_cost -> :add_alternative
-                      true -> :nothing
-                    end
-                end
+                action =
+                  case Map.fetch(acc.paths, neighbour_node) do
+                    :error ->
+                      :replace
 
-              case action do
-                :replace ->
-                  acc
-                  |> put_in(
-                    [:paths, neighbour_node],
-                    {node_paths, cost_through_node}
-                  )
-                  |> update_in([:queue], fn queue ->
-                    new_queue_element = {neighbour_node, cost_through_node}
+                    {:ok, {_path, neighbour_cost}} ->
+                      cond do
+                        cost_through_node < neighbour_cost -> :replace
+                        cost_through_node == neighbour_cost -> :add_alternative
+                        true -> :nothing
+                      end
+                  end
 
-                    # Insert element at the correct position in the priority queue, then filter
-                    # out any existing entries for this node further down the queue, in a single
-                    # pass through the list.
-                    Stream.transform(
-                      queue,
-                      fn -> :insert end,
-                      fn
-                        {queue_node, cost} = element, :insert ->
-                          cond do
-                            cost < cost_through_node -> {[element], :insert}
-                            queue_node == neighbour_node -> {[new_queue_element], :dedup}
-                            true -> {[new_queue_element, element], :dedup}
-                          end
-
-                        {queue_node, _cost} = element, :dedup ->
-                          if queue_node == neighbour_node do
-                            {[], :dedup}
-                          else
-                            {[element], :dedup}
-                          end
-                      end,
-                      fn
-                        :insert -> {[new_queue_element], :done}
-                        :dedup -> {[], :done}
-                      end,
-                      & &1
+                case action do
+                  :replace ->
+                    acc
+                    |> put_in(
+                      [:paths, neighbour_node],
+                      {node_paths, cost_through_node}
                     )
-                    |> Enum.to_list()
-                  end)
+                    |> update_in([:queue], fn queue ->
+                      {left, right} =
+                        Enum.split_while(queue, fn {_point, cost} ->
+                          cost < cost_through_node
+                        end)
 
-                :add_alternative ->
-                  update_in(acc.paths[neighbour_node], fn {paths, cost} ->
-                    {node_paths ++ paths, cost}
-                  end)
+                      left ++ [{neighbour_node, cost_through_node} | right]
+                    end)
 
-                :nothing ->
-                  acc
-              end
+                  :add_alternative ->
+                    update_in(acc.paths[neighbour_node], fn {paths, cost} ->
+                      {node_paths ++ paths, cost}
+                    end)
+
+                  :nothing ->
+                    acc
+                end
+            end
           end
           |> then(&{[], &1})
       end,
@@ -214,26 +194,22 @@ defmodule Main do
     end)
   end
 
-  @spec part_1() :: any()
-  def part_1() do
+  @spec parts_1_and_2() :: any()
+  def parts_1_and_2() do
     line_stream()
     |> parse_grid()
     |> build_graph()
     |> shortest_paths(:start, :end)
-    |> then(fn {:some, {_paths, cost}} -> cost end)
-  end
+    |> then(fn {:some, {paths, cost}} ->
+      part_1 = cost
 
-  @spec part_2() :: any()
-  def part_2() do
-    line_stream()
-    |> parse_grid()
-    |> build_graph()
-    |> shortest_paths(:start, :end)
-    |> then(fn {:some, {paths, _cost}} ->
-      for path <- paths, {node, _side} <- path, uniq: true do
-        node
-      end
-      |> Enum.count()
+      part_2 =
+        for path <- paths, {node, _side} <- path, uniq: true do
+          node
+        end
+        |> Enum.count()
+
+      {part_1, part_2}
     end)
   end
 end
@@ -242,5 +218,6 @@ Inspect.Opts.default_inspect_fun(
   &Inspect.inspect(&1, %Inspect.Opts{&2 | charlists: :as_lists, limit: :infinity})
 )
 
-IO.puts("Part 1: #{Main.part_1()}")
-IO.puts("Part 2: #{Main.part_2()}")
+{part_1, part_2} = Main.parts_1_and_2()
+IO.puts("Part 1: #{part_1}")
+IO.puts("Part 2: #{part_2}")
