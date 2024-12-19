@@ -1,0 +1,246 @@
+defmodule Main do
+  @moduledoc false
+
+  @type point :: {integer(), integer()}
+  @type grid :: %{point() => String.t()}
+  @type graph :: map()
+
+  @spec line_stream() :: Stream.t()
+  defp line_stream() do
+    File.stream!("input")
+    |> Stream.map(&String.trim_trailing(&1, "\n"))
+  end
+
+  @spec parse_grid([String.t()]) :: grid()
+  defp parse_grid(lines) do
+    lines = Enum.to_list(lines)
+
+    bounds = {
+      String.length(Enum.at(lines, 0)),
+      Enum.count(lines)
+    }
+
+    for {line, y} <- Enum.with_index(lines),
+        {char, x} <- Enum.with_index(String.graphemes(line)),
+        reduce: %{
+          squares: MapSet.new(),
+          bounds: bounds
+        } do
+      acc ->
+        acc =
+          if char in [".", "S", "E"] do
+            Map.update!(acc, :squares, &MapSet.put(&1, {x, y}))
+          else
+            acc
+          end
+
+        case char do
+          "S" -> Map.put(acc, :start, {x, y})
+          "E" -> Map.put(acc, :end, {x, y})
+          _ -> acc
+        end
+    end
+  end
+
+  @spec add_points(point(), point()) :: point()
+  defp add_points({left_x, left_y}, {right_x, right_y}) do
+    {
+      left_x + right_x,
+      left_y + right_y
+    }
+  end
+
+  @spec build_graph(grid()) :: graph()
+  defp build_graph(grid) do
+    {bounds_x, bounds_y} = grid.bounds
+
+    add_edge = fn graph, node_a, node_b, weight ->
+      graph
+      |> Map.update(node_a, %{node_b => weight}, &Map.put(&1, node_b, weight))
+      |> Map.update(node_b, %{node_a => weight}, &Map.put(&1, node_a, weight))
+    end
+
+    graph =
+      %{}
+      |> add_edge.(:start, {grid.start, :right}, 0)
+      |> add_edge.(:end, {grid.end, :top}, 0)
+      |> add_edge.(:end, {grid.end, :right}, 0)
+      |> add_edge.(:end, {grid.end, :bottom}, 0)
+      |> add_edge.(:end, {grid.end, :left}, 0)
+
+    for y <- 0..bounds_y,
+        x <- 0..bounds_x,
+        reduce: graph do
+      acc ->
+        point = {x, y}
+
+        if point in grid.squares do
+          acc =
+            acc
+            |> add_edge.({point, :left}, {point, :right}, 1)
+            |> add_edge.({point, :top}, {point, :bottom}, 1)
+            |> add_edge.({point, :top}, {point, :right}, 1001)
+            |> add_edge.({point, :right}, {point, :bottom}, 1001)
+            |> add_edge.({point, :bottom}, {point, :left}, 1001)
+            |> add_edge.({point, :left}, {point, :top}, 1001)
+
+          [
+            {{1, 0}, {:right, :left}},
+            {{0, 1}, {:bottom, :top}}
+          ]
+          |> Enum.reduce(acc, fn {neighbour_direction, {point_side, neighbour_side}}, acc ->
+            neighbour = add_points(point, neighbour_direction)
+
+            if neighbour in grid.squares do
+              add_edge.(acc, {point, point_side}, {neighbour, neighbour_side}, 0)
+            else
+              acc
+            end
+          end)
+        else
+          acc
+        end
+    end
+  end
+
+  @spec shortest_paths(graph(), point(), point()) ::
+          {:some, {[point()], non_neg_integer()}} | :none
+  defp shortest_paths(graph, from, to) do
+    Stream.resource(
+      fn ->
+        %{
+          graph: graph,
+          queue: [{from, 0}],
+          paths: %{from => {[[]], 0}},
+          visited: MapSet.new()
+        }
+      end,
+      fn
+        :finished ->
+          {:halt, :finished}
+
+        %{queue: []} ->
+          {:halt, :none}
+
+        %{queue: [{^to, cost} | _]} = acc ->
+          {paths, ^cost} = Map.fetch!(acc.paths, to)
+          paths = Enum.map(paths, &Enum.reverse(&1))
+          {[{paths, cost}], :finished}
+
+        %{queue: [{node, _node_cost} | queue_tail]} = acc ->
+          acc =
+            %{acc | queue: queue_tail}
+            |> Map.update!(:visited, &MapSet.put(&1, node))
+
+          {node_paths, node_cost} = Map.fetch!(acc.paths, node)
+          node_paths = Enum.map(node_paths, &[node | &1])
+
+          for {neighbour_node, edge_cost} <- Map.get(graph, node, %{}),
+              neighbour_node not in acc.visited,
+              reduce: acc do
+            acc ->
+              cost_through_node = node_cost + edge_cost
+
+              action =
+                case Map.fetch(acc.paths, neighbour_node) do
+                  :error ->
+                    :replace
+
+                  {:ok, {_path, neighbour_cost}} ->
+                    cond do
+                      cost_through_node < neighbour_cost -> :replace
+                      cost_through_node == neighbour_cost -> :add_alternative
+                      true -> :nothing
+                    end
+                end
+
+              case action do
+                :replace ->
+                  acc
+                  |> put_in(
+                    [:paths, neighbour_node],
+                    {node_paths, cost_through_node}
+                  )
+                  |> update_in([:queue], fn queue ->
+                    new_queue_element = {neighbour_node, cost_through_node}
+
+                    # Insert element at the correct position in the priority queue, then filter
+                    # out any existing entries for this node further down the queue, in a single
+                    # pass through the list.
+                    Stream.transform(
+                      queue,
+                      fn -> :insert end,
+                      fn
+                        {queue_node, cost} = element, :insert ->
+                          cond do
+                            cost < cost_through_node -> {[element], :insert}
+                            queue_node == neighbour_node -> {[new_queue_element], :dedup}
+                            true -> {[new_queue_element, element], :dedup}
+                          end
+
+                        {queue_node, _cost} = element, :dedup ->
+                          if queue_node == neighbour_node do
+                            {[], :dedup}
+                          else
+                            {[element], :dedup}
+                          end
+                      end,
+                      fn
+                        :insert -> {[new_queue_element], :done}
+                        :dedup -> {[], :done}
+                      end,
+                      & &1
+                    )
+                    |> Enum.to_list()
+                  end)
+
+                :add_alternative ->
+                  update_in(acc.paths[neighbour_node], fn {paths, cost} ->
+                    {node_paths ++ paths, cost}
+                  end)
+
+                :nothing ->
+                  acc
+              end
+          end
+          |> then(&{[], &1})
+      end,
+      & &1
+    )
+    |> Enum.to_list()
+    |> then(fn
+      [] -> :none
+      [value] -> {:some, value}
+    end)
+  end
+
+  @spec part_1() :: any()
+  def part_1() do
+    line_stream()
+    |> parse_grid()
+    |> build_graph()
+    |> shortest_paths(:start, :end)
+    |> then(fn {:some, {_paths, cost}} -> cost end)
+  end
+
+  @spec part_2() :: any()
+  def part_2() do
+    line_stream()
+    |> parse_grid()
+    |> build_graph()
+    |> shortest_paths(:start, :end)
+    |> then(fn {:some, {paths, _cost}} ->
+      for path <- paths, {node, _side} <- path, uniq: true do
+        node
+      end
+      |> Enum.count()
+    end)
+  end
+end
+
+Inspect.Opts.default_inspect_fun(
+  &Inspect.inspect(&1, %Inspect.Opts{&2 | charlists: :as_lists, limit: :infinity})
+)
+
+IO.puts("Part 1: #{Main.part_1()}")
+IO.puts("Part 2: #{Main.part_2()}")
