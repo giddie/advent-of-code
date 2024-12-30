@@ -119,93 +119,128 @@ defmodule Main do
 
   @spec part_2() :: any()
   def part_2() do
-    {files, gaps} =
-      line_stream()
-      |> Enum.at(0)
-      |> parse_disk_map()
-
-    files
+    line_stream()
+    |> Enum.at(0)
+    |> String.graphemes()
+    |> Enum.map(&String.to_integer/1)
+    |> Enum.chunk_every(2, 2, [0])
     |> Enum.with_index()
     |> Enum.reduce(
       %{
-        files_after_relocations: [],
-        gaps: gaps |> Enum.with_index() |> Enum.reverse(),
-        relocations: %{}
+        files: [],
+        gaps_by_length: %{},
+        chunk_start_index: 0
       },
-      fn
-        {chunk_to_relocate, file_index}, acc ->
-          Enum.split_while(acc.gaps, fn {gap, gap_index} ->
-            gap < chunk_to_relocate.length and gap_index > file_index
-          end)
-          |> then(fn found ->
-            with {_left, [{_gap, gap_index} | _]} when gap_index <= file_index <- found do
-              {acc.gaps, []}
-            end
-          end)
-          |> then(fn
-            {_left, []} ->
-              %{
-                acc
-                | files_after_relocations: [
-                    {:chunk, chunk_to_relocate} | acc.files_after_relocations
-                  ]
-              }
+      fn {[file_length, gap_length], file_index}, acc ->
+        gap_start_index = acc.chunk_start_index + file_length
 
-            {left, [{chosen_gap, index} | right]} ->
-              new_gap_length = chosen_gap - chunk_to_relocate.length
-              gaps = left ++ [{new_gap_length, index} | right]
+        file_chunk = %{
+          start_index: acc.chunk_start_index,
+          id: file_index,
+          length: file_length
+        }
 
-              relocations =
-                Map.update(
-                  acc.relocations,
-                  index,
-                  [{:chunk, chunk_to_relocate}],
-                  &[{:chunk, chunk_to_relocate} | &1]
-                )
+        gaps_by_length =
+          if gap_length > 0 do
+            Map.update(
+              acc.gaps_by_length,
+              gap_length,
+              [gap_start_index],
+              &[gap_start_index | &1]
+            )
+          else
+            acc.gaps_by_length
+          end
 
-              %{
-                acc
-                | files_after_relocations: [
-                    {:gap, chunk_to_relocate.length} | acc.files_after_relocations
-                  ],
-                  gaps: gaps,
-                  relocations: relocations
-              }
-          end)
+        %{
+          acc
+          | files: [file_chunk | acc.files],
+            gaps_by_length: gaps_by_length,
+            chunk_start_index: acc.chunk_start_index + file_length + gap_length
+        }
       end
     )
     |> then(fn acc ->
-      new_gap_chunks =
-        for {gap_length, index} <- acc.gaps do
-          chunks = Map.get(acc.relocations, index, [])
-
-          if gap_length > 0 do
-            [{:gap, gap_length} | chunks]
-          else
-            chunks
-          end
-          |> Enum.reverse()
+      gaps_by_length =
+        for {length, indexes} <- acc.gaps_by_length, into: %{} do
+          {length, Enum.reverse(indexes)}
         end
 
-      Enum.zip(acc.files_after_relocations, new_gap_chunks)
-      |> Enum.map(fn {left, right} -> [left | right] end)
-      |> Enum.concat()
+      acc.files
+      |> Enum.reduce(
+        %{
+          gaps_by_length: gaps_by_length,
+          files: []
+        },
+        fn file, acc ->
+          acc.gaps_by_length
+          |> Enum.reduce(:none, fn
+            {_gap_length, []}, acc ->
+              acc
+
+            {gap_length, [gap_index | _]}, acc ->
+              if gap_length < file.length or gap_index >= file.start_index do
+                acc
+              else
+                case acc do
+                  :none ->
+                    {gap_length, gap_index}
+
+                  {_acc_gap_length, acc_gap_index} when gap_index < acc_gap_index ->
+                    {gap_length, gap_index}
+
+                  _ ->
+                    acc
+                end
+              end
+          end)
+          |> then(fn
+            :none ->
+              %{acc | files: [file | acc.files]}
+
+            {gap_length, gap_index} ->
+              gaps_by_length = Map.update!(acc.gaps_by_length, gap_length, &Enum.drop(&1, 1))
+              new_gap_length = gap_length - file.length
+
+              gaps_by_length =
+                if new_gap_length > 0 do
+                  new_gap_index = gap_index + file.length
+
+                  Map.update(
+                    gaps_by_length,
+                    new_gap_length,
+                    [new_gap_index],
+                    fn indexes ->
+                      {left, right} = Enum.split_while(indexes, &(&1 < new_gap_index))
+                      left ++ [new_gap_index | right]
+                    end
+                  )
+                else
+                  gaps_by_length
+                end
+
+              %{
+                acc
+                | gaps_by_length: gaps_by_length,
+                  files: [%{file | start_index: gap_index} | acc.files]
+              }
+          end)
+        end
+      )
     end)
-    |> Stream.transform(0, fn
-      {:gap, length}, chunk_start_index ->
-        {[], chunk_start_index + length}
+    |> then(fn acc ->
+      acc.files
+      |> Enum.sort_by(& &1.start_index)
+      |> Enum.reduce(0, fn file, acc ->
+        file_end_index = file.start_index + file.length - 1
 
-      {:chunk, chunk}, chunk_start_index ->
-        next_chunk_start_index = chunk_start_index + chunk.length
-
-        # Sum of integer sequence
-        chunk_checksum_sum =
-          ((chunk_start_index + next_chunk_start_index - 1) * chunk.length * chunk.id)
+        file_checksum =
+          ((file.start_index + file_end_index) * file.length * file.id)
           |> Bitwise.bsr(1)
 
-        {[chunk_checksum_sum], next_chunk_start_index}
+        file_checksum + acc
+      end)
     end)
-    |> Enum.sum()
   end
 end
 
