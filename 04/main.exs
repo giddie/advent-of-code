@@ -1,3 +1,22 @@
+# Benchmarks
+#
+# Name              ips        average  deviation         median         99th %
+# part_1           6.36      157.34 ms    ±15.44%      151.08 ms      277.76 ms
+# part_2a          6.03      165.91 ms    ±15.32%      160.80 ms      301.73 ms
+# part_2b          7.09      141.03 ms    ±11.85%      138.24 ms      237.26 ms
+#
+# Comparison:
+# part_1           6.36 - 1.12x slower +16.31 ms
+# part_2a          6.03 - 1.18x slower +24.88 ms
+# part_2b          7.09
+#
+# Memory usage statistics:
+#
+# Name            average  deviation         median         99th %
+# part_1        553.19 MB - 3.40x memory usage +390.72 MB
+# part_2a       555.81 MB - 3.42x memory usage +393.34 MB
+# part_2b       162.47 MB
+
 defmodule Main do
   @moduledoc false
 
