@@ -1,18 +1,18 @@
 # Benchmarks
 #
 # Name             ips        average  deviation         median         99th %
-# part_1          0.73         1.37 s     ±0.80%         1.36 s         1.38 s
-# part_2          0.73         1.38 s     ±0.94%         1.38 s         1.39 s
+# part_1         50.32       19.87 ms     ±6.73%       19.49 ms       24.17 ms
+# part_2          1.66      601.86 ms     ±2.10%      598.66 ms      622.53 ms
 #
 # Comparison:
-# part_1          0.73
-# part_2          0.73 - 1.01x slower +0.00876 s
+# part_1         50.32
+# part_2          1.66 - 30.29x slower +581.99 ms
 #
 # Memory usage statistics:
 #
 # Name      Memory usage
-# part_1         1.67 GB
-# part_2         1.67 GB - 1.00x memory usage +0 GB
+# part_1        15.11 MB
+# part_2       193.87 MB - 12.83x memory usage +178.77 MB
 
 defmodule Main do
   @moduledoc false
@@ -74,30 +74,50 @@ defmodule Main do
     end)
   end
 
+  @spec manhattan_distance_diamond(non_neg_integer()) :: [point()]
+  defp manhattan_distance_diamond(distance) do
+    top_and_bottom =
+      Stream.unfold({distance, 0}, fn {line_y, left_x} ->
+        Enum.flat_map(-left_x..left_x, fn x ->
+          [
+            {line_y, x},
+            {-line_y, x}
+          ]
+        end)
+        |> then(&{&1, {line_y - 1, left_x + 1}})
+      end)
+      |> Enum.take(distance)
+      |> Enum.concat()
+
+    middle =
+      [-distance..-1, 1..distance]
+      |> Stream.concat()
+      |> Enum.map(&{0, &1})
+
+    top_and_bottom ++ middle
+  end
+
   @spec count_cheats([point()], non_neg_integer()) :: non_neg_integer()
   defp count_cheats(main_path, max_length) do
-    Stream.unfold({main_path, []}, fn
-      {[], _closer_points} ->
-        nil
+    manhattan_distance_diamond = manhattan_distance_diamond(max_length)
+    main_path_with_index = Enum.with_index(main_path)
 
-      {[point | path_tail], closer_points} ->
-        {
-          {point, closer_points},
-          {path_tail, [point | closer_points]}
-        }
-    end)
-    |> Enum.sum_by(
-      fn {{y, x}, closer_points} ->
-        for {{closer_y, closer_x}, closer_distance} <- Enum.with_index(closer_points),
-            manhattan_distance = abs(closer_y - y) + abs(closer_x - x),
-            manhattan_distance <= max_length,
-            score = closer_distance - manhattan_distance + 1,
-            score >= 100,
-            reduce: 0 do
-          acc -> acc + 1
-        end
+    main_path_distances =
+      for {point, distance} <- main_path_with_index, reduce: %{} do
+        acc -> Map.put(acc, point, distance)
       end
-    )
+
+    Enum.sum_by(main_path_with_index, fn {{base_y, base_x}, base_distance} ->
+      for {delta_y, delta_x} <- manhattan_distance_diamond,
+          point = {base_y + delta_y, base_x + delta_x},
+          point_distance = Map.get(main_path_distances, point, base_distance),
+          manhattan_distance = abs(delta_y) + abs(delta_x),
+          score = point_distance - base_distance - manhattan_distance,
+          score >= 100,
+          reduce: 0 do
+        acc -> acc + 1
+      end
+    end)
   end
 
   @spec part_1() :: any()
