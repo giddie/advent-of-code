@@ -9,16 +9,58 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     std.debug.print("Part 1: {d}\n", .{try part1(allocator)});
+    std.debug.print("Part 2: {d}\n", .{try part2(allocator)});
 }
 
 fn part1(allocator: std.mem.Allocator) !usize {
+    var lists = try readLists(allocator);
+    defer lists.left.deinit(allocator);
+    defer lists.right.deinit(allocator);
+
+    std.mem.sort(isize, lists.left.items, {}, std.sort.asc(isize));
+    std.mem.sort(isize, lists.right.items, {}, std.sort.asc(isize));
+
+    var sum: usize = 0;
+    for (lists.left.items, lists.right.items) |left, right| {
+        sum += @abs(left - right);
+    }
+
+    return sum;
+}
+
+fn part2(allocator: std.mem.Allocator) !isize {
+    var lists = try readLists(allocator);
+    defer lists.left.deinit(allocator);
+    defer lists.right.deinit(allocator);
+
+    var frequencies: std.AutoHashMap(isize, isize) = .init(allocator);
+    defer frequencies.deinit();
+
+    for (lists.right.items) |item| {
+        const result = try frequencies.getOrPut(item);
+        if (result.found_existing) {
+            result.value_ptr.* += 1;
+        } else {
+            result.value_ptr.* = 1;
+        }
+    }
+
+    var sum: isize = 0;
+    for (lists.left.items) |item| {
+        if (frequencies.get(item)) |frequency| {
+            sum += item * frequency;
+        }
+    }
+
+    return sum;
+}
+
+fn readLists(allocator: std.mem.Allocator) !struct { left: std.ArrayList(isize), right: std.ArrayList(isize) } {
     var file_line_iterator = try FileLineIterator.init(allocator, input_file);
     defer file_line_iterator.deinit();
 
     var left_list: std.ArrayList(isize) = .empty;
     var right_list: std.ArrayList(isize) = .empty;
-    defer left_list.deinit(allocator);
-    defer right_list.deinit(allocator);
 
     var line_number: usize = 0;
 
@@ -32,15 +74,10 @@ fn part1(allocator: std.mem.Allocator) !usize {
         try right_list.append(allocator, parsed.right);
     }
 
-    std.mem.sort(isize, left_list.items, {}, std.sort.asc(isize));
-    std.mem.sort(isize, right_list.items, {}, std.sort.asc(isize));
-
-    var sum: usize = 0;
-    for (left_list.items, right_list.items) |left, right| {
-        sum += @abs(left - right);
-    }
-
-    return sum;
+    return .{
+        .left = left_list,
+        .right = right_list,
+    };
 }
 
 fn parseLine(line: []const u8) !struct { left: isize, right: isize } {
